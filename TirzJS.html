@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tirzepatide 시뮬레이터</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto bg-white shadow-lg rounded-lg p-6">
+
+        <h1 class="text-2xl font-bold text-center text-blue-700 mb-6">
+            3-Phase Tirzepatide Steady State 시뮬레이터
+        </h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 p-4 bg-gray-50 rounded-lg border">
+            <div>
+                <label for="n_mg" class="block text-sm font-medium text-gray-700">1회 투여량 (mg)</label>
+                <input type="number" id="n_mg" value="10.0" step="5.0" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            <div>
+                <label for="m_days" class="block text-sm font-medium text-gray-700">투여 주기 (days)</label>
+                <input type="number" id="m_days" value="7.0" step="0.5" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            <button id="run_button" class="md:mt-6 w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow hover:bg-blue-700 transition duration-150">
+                시뮬레이션 실행
+            </button>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4 mb-6 text-center">
+            <div class="bg-blue-50 p-4 rounded-lg shadow">
+                <div class="text-sm text-blue-600">평균 체내 총량 (C_avg)</div>
+                <div id="c_avg_result" class="text-2xl font-bold text-blue-900">- mg</div>
+            </div>
+            <div class="bg-orange-50 p-4 rounded-lg shadow">
+                <div class="text-sm text-orange-600">최고 체내 총량 (C_max)</div>
+                <div id="c_max_result" class="text-2xl font-bold text-orange-900">- mg</div>
+            </div>
+            <div class="bg-green-50 p-4 rounded-lg shadow">
+                <div class="text-sm text-green-600">최저 체내 총량 (C_min)</div>
+                <div id="c_min_result" class="text-2xl font-bold text-green-900">- mg</div>
+            </div>
+        </div>
+
+        <div class="p-4 bg-gray-50 rounded-lg shadow-inner border h-64 md:h-[32rem]">
+            <canvas id="pkChart"></canvas>
+        </div>
+        
+        <p class="text-center text-xs text-gray-500 mt-4">
+            이 계산은 임상 데이터를 기반으로 일반화된 3-Phase 모델을 사용합니다.
+        </p>
+    </div>
+
+    <script>
+        const K_ELIMINATION = 0.1386294361;
+        const T_RISE = 1.0;
+        const T_PLATEAU = 3.0;
+        const N_DOSES_FOR_SS = 500;
+
+        function getSingleDoseConc(t_since_dose, n_mg) {
+            if (t_since_dose < 0) {
+                return 0.0;
+            }
+            
+            const base_conc = 0.8 * n_mg;
+            
+            if (0 <= t_since_dose && t_since_dose < T_RISE) {
+                return base_conc * t_since_dose;
+            } else if (T_RISE <= t_since_dose && t_since_dose <= T_PLATEAU) {
+                return base_conc;
+            } else if (t_since_dose > T_PLATEAU) {
+                return base_conc * Math.exp(-K_ELIMINATION * (t_since_dose - T_PLATEAU));
+            }
+            return 0.0;
+        }
+
+        function getSteadyStateConc(t_in_interval, n_mg, m_days) {
+            let total_conc = 0.0;
+            for (let i = 0; i < N_DOSES_FOR_SS; i++) {
+                const t_since_dose = t_in_interval + (i * m_days);
+                total_conc += getSingleDoseConc(t_since_dose, n_mg);
+            }
+            return total_conc;
+        }
+
+        function calculateCAvgAnalytical(n_mg, m_days) {
+            const auc_single_inf = (0.8 * n_mg) * (2.5 + (1 / K_ELIMINATION));
+            const c_avg = auc_single_inf / m_days;
+            return c_avg;
+        }
+
+        const ctx = document.getElementById('pkChart').getContext('2d');
+        let pkChartInstance = null;
+
+        const nMgInput = document.getElementById('n_mg');
+        const mDaysInput = document.getElementById('m_days');
+        const runButton = document.getElementById('run_button');
+        
+        const cAvgResult = document.getElementById('c_avg_result');
+        const cMaxResult = document.getElementById('c_max_result');
+        const cMinResult = document.getElementById('c_min_result');
+
+        function runSimulation() {
+            const n_mg = parseFloat(nMgInput.value);
+            const m_days = parseFloat(mDaysInput.value);
+
+            if (isNaN(n_mg) || isNaN(m_days) || n_mg <= 0 || m_days <= 0) {
+                alert("유효한 투여량과 주기를 입력하세요 (0보다 큰 숫자).");
+                return;
+            }
+
+            const num_points = Math.max(Math.floor(m_days * 24) + 1, 2);
+            const t_plot_days = Array.from({ length: num_points }, (_, i) => (i / (num_points - 1)) * m_days);
+            const conc_plot = t_plot_days.map(t => getSteadyStateConc(t, n_mg, m_days));
+            
+            const c_avg = calculateCAvgAnalytical(n_mg, m_days);
+            const c_min = conc_plot[0]; // t=0
+            const c_max = Math.max(...conc_plot);
+            
+            cAvgResult.textContent = `${c_avg.toFixed(2)} mg`;
+            cMaxResult.textContent = `${c_max.toFixed(2)} mg`;
+            cMinResult.textContent = `${c_min.toFixed(2)} mg`;
+
+            const t_plot_hours = t_plot_days.map(t => t * 24);
+            const total_hours = m_days * 24;
+
+            if (pkChartInstance) {
+                pkChartInstance.destroy();
+            }
+
+            pkChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: t_plot_hours,
+                    datasets: [
+                        {
+                            label: 'Steady State Concentraion',
+                            data: conc_plot,
+                            borderColor: 'rgb(220, 38, 38)',
+                            backgroundColor: 'rgba(220, 38, 38, 0.1)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            tension: 0.1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: `Steady State Profile: ${n_mg} mg every ${m_days} days`
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: `Time in one dosing interval (hours) - Total ${total_hours.toFixed(0)} hours`
+                            },
+                            min: 0,
+                            max: total_hours
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Concentration (mg)'
+                            },
+                            min: c_min * 0.8,
+                            max: c_max * 1.2
+                        }
+                    }
+                }
+            });
+        }
+
+        runButton.addEventListener('click', runSimulation);
+        
+        document.addEventListener('DOMContentLoaded', runSimulation);
+
+    </script>
+</body>
+</html>
